@@ -1,295 +1,57 @@
-import { Telegraf, Markup } from "telegraf";
-import fs from "fs-extra";
-import axios from "axios";
-import { exec } from "child_process";
-import { BOT_TOKEN } from "./config.js";
+const TelegramBot = require("node-telegram-bot-api");
+const ffmpeg = require("fluent-ffmpeg");
+const fs = require("fs-extra");
+const path = require("path");
 
-const bot = new Telegraf(BOT_TOKEN);
+const { BOT_TOKEN, WATERMARK_TEXT } = require("./config");
 
-/* ================= TEMP FOLDER ================= */
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-if (!fs.existsSync("./temp")) {
-  fs.mkdirSync("./temp");
-}
+const TEMP = path.join(__dirname, "temp");
+fs.ensureDirSync(TEMP);
 
-/* ================= USER STORAGE ================= */
-
-const voiceStore = {};
-
-/* ================= START ================= */
-
-bot.start(async (ctx) => {
-
-  await ctx.reply(
-`🎭 Welcome To Voice Meme Bot
-
-🎤 Send Any Voice Message
-
-🔥 Available Effects:
-🐿 Chipmunk
-🐻 Deep
-🤖 Robot
-👻 Echo`,
-    Markup.keyboard([
-      ["🗑 Delete Temp"]
-    ]).resize()
-  );
-
-});
-
-/* ================= DOWNLOAD VOICE ================= */
-
-bot.on("voice", async (ctx) => {
+bot.on("video", async (msg) => {
+  const chatId = msg.chat.id;
 
   try {
+    const file = await bot.getFile(msg.video.file_id);
+    const filePath = file.file_path;
 
-    const fileId = ctx.message.voice.file_id;
+    const input = path.join(TEMP, "input.mp4");
+    const output = path.join(TEMP, "output.mp4");
 
-    const file = await ctx.telegram.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 
-    const url =
-`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
+    fs.writeFileSync(input, Buffer.from(buffer));
 
-    const id = ctx.from.id;
+    bot.sendMessage(chatId, "⏳ Watermark add হচ্ছে...");
 
-    const input = `./temp/${id}.ogg`;
-
-    const response = await axios({
-      url,
-      method: "GET",
-      responseType: "stream"
-    });
-
-    const writer = fs.createWriteStream(input);
-
-    response.data.pipe(writer);
-
-    writer.on("finish", async () => {
-
-      voiceStore[id] = input;
-
-      await ctx.reply(
-`🎭 Select Voice Effect`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-
-              [
-                {
-                  text: "🐿 Chipmunk",
-                  callback_data: "chipmunk"
-                },
-
-                {
-                  text: "🐻 Deep",
-                  callback_data: "deep"
-                }
-              ],
-
-              [
-                {
-                  text: "🤖 Robot",
-                  callback_data: "robot"
-                },
-
-                {
-                  text: "👻 Echo",
-                  callback_data: "echo"
-                }
-              ]
-
-            ]
-          }
+    ffmpeg(input)
+      .videoFilters({
+        filter: "drawtext",
+        options: {
+          text: WATERMARK_TEXT,
+          fontsize: 24,
+          fontcolor: "white",
+          x: 10,
+          y: "(h-text_h-10)"
         }
-      );
-
-    });
-
-  } catch (e) {
-
-    console.log(e);
-
-    ctx.reply("❌ Voice Download Error");
-
-  }
-
-});
-
-/* ================= PROCESS FUNCTION ================= */
-
-async function processVoice(ctx, effect, command) {
-
-  try {
-
-    const id = ctx.from.id;
-
-    const input = voiceStore[id];
-
-    if (!input || !fs.existsSync(input)) {
-
-      return ctx.answerCbQuery(
-        "❌ Send Voice First",
-        { show_alert: true }
-      );
-
-    }
-
-    const output = `./temp/${id}_${effect}.mp3`;
-
-    exec(command(input, output), async (err) => {
-
-      if (err) {
-
+      })
+      .output(output)
+      .on("end", async () => {
+        await bot.sendVideo(chatId, output);
+        bot.sendMessage(chatId, "✅ Done watermark added!");
+      })
+      .on("error", (err) => {
         console.log(err);
-
-        return ctx.reply(
-`❌ FFmpeg Error
-
-Make Sure FFmpeg Installed`
-        );
-
-      }
-
-      if (!fs.existsSync(output)) {
-
-        return ctx.reply(
-          "❌ Output File Not Created"
-        );
-
-      }
-
-      await ctx.replyWithAudio({
-        source: output
-      });
-
-    });
+        bot.sendMessage(chatId, "❌ FFmpeg error");
+      })
+      .run();
 
   } catch (e) {
-
     console.log(e);
-
-    ctx.reply("❌ Processing Error");
-
+    bot.sendMessage(chatId, "❌ Error occurred");
   }
-
-}
-
-/* ================= CHIPMUNK ================= */
-
-bot.action("chipmunk", async (ctx) => {
-
-  await ctx.answerCbQuery(
-    "🐿 Processing..."
-  );
-
-  processVoice(
-    ctx,
-    "chipmunk",
-    (input, output) =>
-`ffmpeg -i "${input}" -filter:a "asetrate=44100*1.25,aresample=44100" "${output}" -y`
-  );
-
 });
-
-/* ================= DEEP ================= */
-
-bot.action("deep", async (ctx) => {
-
-  await ctx.answerCbQuery(
-    "🐻 Processing..."
-  );
-
-  processVoice(
-    ctx,
-    "deep",
-    (input, output) =>
-`ffmpeg -i "${input}" -filter:a "asetrate=44100*0.8,aresample=44100" "${output}" -y`
-  );
-
-});
-
-/* ================= ROBOT ================= */
-
-bot.action("robot", async (ctx) => {
-
-  await ctx.answerCbQuery(
-    "🤖 Processing..."
-  );
-
-  processVoice(
-    ctx,
-    "robot",
-    (input, output) =>
-`ffmpeg -i "${input}" -filter_complex "afftfilt=real='hypot(re,im)':imag='0'" "${output}" -y`
-  );
-
-});
-
-/* ================= ECHO ================= */
-
-bot.action("echo", async (ctx) => {
-
-  await ctx.answerCbQuery(
-    "👻 Processing..."
-  );
-
-  processVoice(
-    ctx,
-    "echo",
-    (input, output) =>
-`ffmpeg -i "${input}" -filter:a "aecho=0.8:0.9:1000:0.3" "${output}" -y`
-  );
-
-});
-
-/* ================= DELETE TEMP ================= */
-
-bot.hears("🗑 Delete Temp", async (ctx) => {
-
-  try {
-
-    const id = ctx.from.id;
-
-    const files = [
-
-      `./temp/${id}.ogg`,
-      `./temp/${id}_chipmunk.mp3`,
-      `./temp/${id}_deep.mp3`,
-      `./temp/${id}_robot.mp3`,
-      `./temp/${id}_echo.mp3`
-
-    ];
-
-    for (const file of files) {
-
-      if (fs.existsSync(file)) {
-        fs.removeSync(file);
-      }
-
-    }
-
-    delete voiceStore[id];
-
-    ctx.reply("✅ Temp Deleted");
-
-  } catch {
-
-    ctx.reply("❌ Delete Error");
-
-  }
-
-});
-
-/* ================= ERROR ================= */
-
-bot.catch((err) => {
-
-  console.log("BOT ERROR:", err);
-
-});
-
-/* ================= START BOT ================= */
-
-bot.launch();
-
-console.log("🎭 Voice Meme Bot Running...");
